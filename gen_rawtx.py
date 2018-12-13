@@ -85,17 +85,51 @@ class Script:
         return serialized
 
 
+class Output:
+    """
+    Represents a Bitcoin input from a transaction.
+    This is an output in the view of the previous tx, because it becomes an input of the current one.
+    """
+    def __init__(self, txid, index):
+        """
+        :param txid: The hash of the transaction which formed this output.
+        :param index: The place of the output in the output list.
+        """
+        if isinstance(txid, int):
+            self.txid = txid.to_bytes(32, 'big')
+        elif isinstance(txid, bytes):
+            self.txid = txid
+        else:
+            raise Exception('txid for output should be specified as bytes or int')
+        if isinstance(index, int):
+            self.index = index.to_bytes(4, 'little')
+        elif isinstance(index, bytes):
+            self.index = index
+        else:
+            raise Exception('index should be bytes or int for output')
+        self.script_pubkey = None # We'll fetch it later with the function below
+
+    def fetch_script(self, bitcoind):
+        """
+        Fetches the script which locks this output.
+
+        :param bitcoind: The instance to ask the script from.
+        :return: The script as bytes.
+        """
+        txid = hex(int.from_bytes(self.txid, 'big'))[2:]
+        index = int.from_bytes(self.index, 'little')
+        return binascii.unhexlify(bitcoind.send('getrawtransaction', [txid, 1])['result']['vout'][index]['scriptPubKey']['hex'])
+
+
 class Transaction:
     """
     Represents a Bitcoin transaction.
     For simplicity this transaction just spends one output and creates one input.
     """
-    def __init__(self, daemon, prev_hash, index, script_sig, value, script_pubkey):
+    def __init__(self, daemon, vin, value, script_pubkey):
         """
         :param daemon: An instance of the Bitcoind class.
-        :param prev_hash: The id of the transaction which contains the output spent by this transaction.
-        :param index: The index of the output spent by this transaction in the output list of the precedent one.
-        :param script_sig: The unlocking script of the output of this transaction.
+        :param vin: The list of instances of Output.
         :param value: The value spent from the output.
         :param script_pubkey: The locking script of the output created by this transaction.
         """
@@ -103,23 +137,12 @@ class Transaction:
         self.id = None
         self.serialized = None
         self.script_pubkey = script_pubkey
-        if isinstance(prev_hash, int):
-            self.prev_hash = prev_hash.to_bytes(sizeof(prev_hash), 'big')
-        elif isinstance(prev_hash, bytes):
-            self.prev_hash = prev_hash
-        else:
-            raise Exception('prev_hash must be specified as int or bytes, not {}'.format(type(prev_hash)))
-        if isinstance(index, int):
-            self.index = index.to_bytes(4, 'little', )
-        elif isinstance(index, bytes):
-            self.index = index
-        else:
-            raise Exception('index must be specified as int or bytes, not {}'.format(type(index)))
-        # For P2PKH We generate script_sig in sign() so it's not needed
-        if not script_sig:
-            self.script_sig = self.get_prev_pubkey()
-        else:
-            self.script_sig = script_sig
+        self.vin = vin
+        for input in self.vin:
+            input.script_pubkey = input.fetch_script(self.network)
+            input.script_sig = None
+        len_vin = len(vin)
+        self.input_cout = len_vin.to_bytes(1, 'little')
         if isinstance(value, int):
             self.value = value.to_bytes(8, 'little')
         elif isinstance(value, bytes):
@@ -127,21 +150,20 @@ class Transaction:
         else:
             raise Exception('value must be specified as int or bytes, not {}'.format(type(value)))
 
-    def serialize(self, script_sig=None):
+    def serialize(self):
         """
         Serializes the transaction.
         :return: The serialized transaction, as bytes.
         """
-        if not script_sig:
-            script_sig = self.script_sig
         tx = b'\x01\x00\x00\x00'  # version
-        tx += b'\x01'  # input count
-        tx += self.prev_hash[::-1]
-        tx += self.index
-        script_length = len(script_sig)
-        tx += script_length.to_bytes(sizeof(script_length), 'big')
-        tx += script_sig
-        tx += b'\xff\xff\xff\xff'  # sequence
+        tx += self.input_cout
+        for input in self.vin:
+            tx += input.txid[::-1] # txid is stocked as big endian
+            tx += input.index
+            script_length = len(input.script_sig)
+            tx += script_length.to_bytes(sizeof(script_length), 'big')
+            tx += input.script_sig
+            tx += b'\xff\xff\xff\xff'  # sequence
         tx += b'\x01'  # output count
         tx += self.value
         script_length = len(self.script_pubkey)
@@ -161,22 +183,25 @@ class Transaction:
         print('{')
         print(' version : ', binascii.hexlify(tx[:4]), ',')
         print(' input_count : ', tx[4], ',')
-        print(' prev_hash : ', binascii.hexlify(tx[5:37]), ',')
-        print(' index : ', binascii.hexlify(tx[37:41]), ',')
-        scriptsig_len = tx[41]
-        print(' scriptsig_len : ', scriptsig_len, ',')
-        print(' scriptsig : ', binascii.hexlify(tx[42:42 + scriptsig_len]), ',')
-        print(' sequence', binascii.hexlify(tx[42 + scriptsig_len:42 + scriptsig_len + 4]), ',')
-        print(' output_count', tx[42 + scriptsig_len + 4], ',')
-        print(' value : ', binascii.hexlify(tx[42 + scriptsig_len + 4:42 + scriptsig_len + 12]), ',')  # aie aie aie
-        output_length = tx[42 + scriptsig_len + 13]
+        i = 0
+        for input in self.vin:
+            print(' input : ')
+            print('     prev_hash : ', binascii.hexlify(tx[i+5:i+37]), ',')
+            print('     index : ', binascii.hexlify(tx[i+37:i+41]), ',')
+            scriptsig_len = tx[i+41]
+            print('     scriptsig_len : ', scriptsig_len, ',')
+            print('     scriptsig : ', binascii.hexlify(tx[i+42:i+42 + scriptsig_len]), ',')
+            print('     sequence', binascii.hexlify(tx[i+42 + scriptsig_len:i + 42 + scriptsig_len + 4]), ',')
+            i = i + 42 + scriptsig_len - 1
+        i = i + 5
+        print(' output_count', tx[i], ',')
+        print(' value : ', binascii.hexlify(tx[i+4:i+12]), ',')  # aie aie aie
+        output_length = tx[i+13]
         print(' output_length : ', output_length, ',')
-        print(' output : ', binascii.hexlify(tx[42 + scriptsig_len + 14:42 + scriptsig_len + 13 + output_length + 1]),
-              ',')  # ouie
-        print(' locktime : ',
-              binascii.hexlify(tx[42 + scriptsig_len + 13 + output_length + 1:42 + scriptsig_len + output_length + 18]),
-              ',')
+        print(' output : ', binascii.hexlify(tx[i+14:i+13+output_length+1]), ',')  # ouie
+        print(' locktime : ', binascii.hexlify(tx[i+13+output_length+1:i+output_length+18]), ',')
         print('}')
+
 
     def get_prev_pubkey(self):
         """
@@ -188,22 +213,38 @@ class Transaction:
         index = int.from_bytes(self.index, 'little')
         return binascii.unhexlify(self.network.send('getrawtransaction', [txid, 1])['result']['vout'][index]['scriptPubKey']['hex'])
 
-    def sign(self, key):
+    def sign_ouputs(self, key, pubkey):
         """
         Signs the transaction.
 
         :param key: The private key with which to sign the transaction.
         :return: The DER-encoded signature.
         """
-        # To sign the transaction, we serialize it with the script_sig being the script_pubkey of the output spent.
-        tx = binascii.unhexlify(self.serialize(script_sig=self.get_prev_pubkey()))
-        # Then we hash this serialized transaction, giving us the payload to sign
-        tx_hash = double_sha256(tx + b'\x01\x00\x00\x00', True) # + the hash_code byte
-        secexp = int.from_bytes(key, 'big')
-        sk = ecdsa.SigningKey.from_secret_exponent(secexp, curve=ecdsa.SECP256k1)
-        # The byte appended is the hash_code byte, signifying we will use SIGHASH_ALL
-        sig = sk.sign_digest(tx_hash, sigencode=ecdsa.util.sigencode_der_canonize) + b'\x01'
-        return sig
+        signed_vin = []
+        # Signing each input
+        for input in self.vin:
+            # We set every other script_sig to null
+            for inp in self.vin:
+                inp.script_sig = b''
+            # And the one we are actually signing to its script_pubkey
+            input.script_sig = input.script_pubkey
+            # To sign the transaction, we serialize it with the script_sig being the script_pubkey of the outputs spent.
+            tx = binascii.unhexlify(self.serialize())
+            # Then we hash this serialized transaction, giving us the payload to sign
+            tx_hash = double_sha256(tx + b'\x01\x00\x00\x00', True) # + the hash_code byte
+            secexp = int.from_bytes(key, 'big')
+            sk = ecdsa.SigningKey.from_secret_exponent(secexp, curve=ecdsa.SECP256k1)
+            # The byte appended is the hash_code byte, signifying we will use SIGHASH_ALL
+            sig = sk.sign_digest(tx_hash, sigencode=ecdsa.util.sigencode_der_canonize) + b'\x01'
+            sig_len = len(sig)
+            pub_len = len(pubkey)
+            input.script_sig = sig_len.to_bytes(sizeof(sig_len), 'big') + sig + pub_len.to_bytes(sizeof(pub_len), 'big') + pubkey
+            # Everything passed by reference, I need a better algorithm
+            input2 = Output(input.txid, input.index)
+            input2.script_sig = input.script_sig
+            input2.script_pubkey = input2.fetch_script(self.network)
+            signed_vin.append(input2)
+        self.vin = signed_vin
 
     def create_and_sign(self, privkey, pubkey):
         """
@@ -213,13 +254,8 @@ class Transaction:
         :param pubkey: The corresponding public key.
         :return: A serialized and signed Bitcoin transaction.
         """
-        # self.sign creates the raw tx so we don't have to do it before
-        sig = self.sign(privkey)
-        # We build the final script_sig
-        sig_len = len(sig)
-        pub_len = len(pubkey)
-        script_sig = sig_len.to_bytes(sizeof(sig_len), 'big') + sig + pub_len.to_bytes(sizeof(pub_len), 'big') + pubkey
-        return self.serialize(script_sig=script_sig)
+        self.sign_ouputs(privkey, pubkey)
+        return self.serialize()
 
     def send(self):
         """
@@ -280,23 +316,26 @@ class Transaction:
 
 if __name__ == '__main__':
     insacoind = Bitcoind('http://127.0.0.1:7332', 'darosior', 'password')
-    txid = 0xdba755d0607b15ebc550f9a6ce733494f5d821eae5000f03b7853236827a7983
-    index = 0
-    script_sig = None
-    pk = wif_decode('T3BU3Q7fA5ixgqox2MdeCSyLrE7Lw3y3LRMXup4FfwDDPbcSWy14')
+
+    output1 = Output(0x4841c10c2527f5c5ed5092dceaaca44e4b10f6214e07e0e20105b9a5c3fe70ee, 0)
+    output2 = Output(0x6aacd50035834f4144ff5509137657bcf1cf830062eca06e5f6ade73a85ab1d8, 0)
+    outputs = [output1, output2]
+    pk = wif_decode('T93wwCrhnQzGwgHFfhZjJGEA9NKuoTtwBb136WTjfek342b7Daf3')
     pub = get_pubkey(pk + b'\x01')
     value = 0
     # Creating an OP_RETURN
-    text = 'DOGECOIN THE NEW BITCOIN'.encode('ascii')
+    text = 'INSACOIN THE NEW BITCOIN'.encode('ascii')
     text_len = len(text)
     script_pubkey = Script('OP_RETURN').parse()
     script_pubkey += text_len.to_bytes(1, 'big') # PUSH
     script_pubkey += text
 
-    tx = Transaction(insacoind, txid, index, script_sig, value, script_pubkey)
+    tx = Transaction(insacoind, outputs, value, script_pubkey)
     tx.create_and_sign(pk, pub)
     response = tx.send()
     if response == True:
         print(tx.id)
     else:
         print(response)
+        print(binascii.hexlify(tx.serialized))
+        tx.print()
