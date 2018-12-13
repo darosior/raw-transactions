@@ -102,7 +102,6 @@ class Transaction:
         self.network = daemon
         self.id = None
         self.serialized = None
-        self.script_sig = script_sig
         self.script_pubkey = script_pubkey
         if isinstance(prev_hash, int):
             self.prev_hash = prev_hash.to_bytes(sizeof(prev_hash), 'big')
@@ -116,6 +115,11 @@ class Transaction:
             self.index = index
         else:
             raise Exception('index must be specified as int or bytes, not {}'.format(type(index)))
+        # For P2PKH We generate script_sig in sign() so it's not needed
+        if not script_sig:
+            self.script_sig = self.get_prev_pubkey()
+        else:
+            self.script_sig = script_sig
         if isinstance(value, int):
             self.value = value.to_bytes(8, 'little')
         elif isinstance(value, bytes):
@@ -275,21 +279,24 @@ class Transaction:
 
 
 if __name__ == '__main__':
-    """
-    privkey = wif_decode('T41pKW96rRf9qfMTUeADvfiikjH2hfBkMvcL72vRjGNrHU1urucv')
-    pubkey = get_pubkey(privkey + b'\x01') # + the compression byte)
-    prev_txid = 0xef3c5c5af079c4231227ad2a608afc54e2ca4b440f1942887b84bfafe726ae47
-    scriptpubkey = Script('OP_RETURN 6461726f73696f72')
+    insacoind = Bitcoind('http://127.0.0.1:7332', 'darosior', 'password')
+    txid = 0xdba755d0607b15ebc550f9a6ce733494f5d821eae5000f03b7853236827a7983
     index = 0
-    value = 0 # In Satoshis
+    script_sig = None
+    pk = wif_decode('T3BU3Q7fA5ixgqox2MdeCSyLrE7Lw3y3LRMXup4FfwDDPbcSWy14')
+    pub = get_pubkey(pk + b'\x01')
+    value = 0
+    # Creating an OP_RETURN
+    text = 'DOGECOIN THE NEW BITCOIN'.encode('ascii')
+    text_len = len(text)
+    script_pubkey = Script('OP_RETURN').parse()
+    script_pubkey += text_len.to_bytes(1, 'big') # PUSH
+    script_pubkey += text
 
-    myCoin = Bitcoind('http://127.0.0.1:7332', 'insacoinrpc', '5CR4JLMSMVspaq8odQH543nJHQ5RX4r5h6Sw9XRp5oL6')
-    myTransaction = Transaction(myCoin, prev_txid, index, script_sig=None, value=value, script_pubkey=scriptpubkey.parse())
-    myTransaction.create_and_sign(privkey, pubkey)
-    myTransaction.print()
-    print(myTransaction.send())
-    """
-    privkey = wif_decode('T9z15bnpSN4hoyDx5JvgirFEYoyNUtcCfmSY7Vm3nUUUCwAuAYpD')
-    pubkey = get_pubkey(privkey + b'\x01')  # + the compression byte)
-    print(binascii.hexlify(privkey))
-    print(get_address(pubkey))
+    tx = Transaction(insacoind, txid, index, script_sig, value, script_pubkey)
+    tx.create_and_sign(pk, pub)
+    response = tx.send()
+    if response == True:
+        print(tx.id)
+    else:
+        print(response)
