@@ -46,6 +46,7 @@ class Bitcoind:
         r = self.session.post(self.url, json=payload)
         return r.json()
 
+
 class Script:
     """
     This class represents a Bitcoin script.
@@ -126,12 +127,14 @@ class Transaction:
     Represents a Bitcoin transaction.
     For simplicity this transaction just spends one output and creates one input.
     """
-    def __init__(self, daemon, vin, value, script_pubkey):
+    def __init__(self, daemon, vin, value, script_pubkey, fees=0, addr_change=None):
         """
         :param daemon: An instance of the Bitcoind class.
         :param vin: The list of instances of Output.
         :param value: The value spent from the output.
         :param script_pubkey: The locking script of the output created by this transaction.
+        :param fees: The fees included in the tx.
+        :param addr_change: The address to give back the change to.
         """
         self.network = daemon
         self.id = None
@@ -149,6 +152,11 @@ class Transaction:
             self.value = value
         else:
             raise Exception('value must be specified as int or bytes, not {}'.format(type(value)))
+        self.change = int.from_bytes(self.value, 'little') - fees
+        if addr_change:
+            self.addr_change = decode_check(addr_change)
+        else:
+            self.addr_change = addr_change
 
     def serialize(self):
         """
@@ -164,11 +172,27 @@ class Transaction:
             tx += script_length.to_bytes(sizeof(script_length), 'big')
             tx += input.script_sig
             tx += b'\xff\xff\xff\xff'  # sequence
-        tx += b'\x01'  # output count
-        tx += self.value
-        script_length = len(self.script_pubkey)
-        tx += script_length.to_bytes(sizeof(script_length), 'big')
-        tx += self.script_pubkey
+        if not self.change or not self.addr_change:
+            tx += b'\x01'  # output count
+            tx += self.value
+            script_length = len(self.script_pubkey)
+            tx += script_length.to_bytes(sizeof(script_length), 'big')
+            tx += self.script_pubkey
+        else:
+            tx += b'\x02'  # output count
+            # The actual output
+            tx += self.value
+            script_length = len(self.script_pubkey)
+            tx += script_length.to_bytes(sizeof(script_length), 'big')
+            tx += self.script_pubkey
+            # The change output
+            tx += self.change.to_bytes(8, 'little')
+            script_pubkey = Script('OP_DUP OP_HASH160').parse()
+            script_pubkey += self.addr_change
+            script_pubkey += Script('OP_EQUALVERIFY OP_CHECKSIG').parse()
+            script_length = len(script_pubkey)
+            tx += script_length.to_bytes(sizeof(script_length), 'big')
+            tx += script_pubkey
         tx += b'\x00\x00\x00\x00'  # timelock
         self.serialized = tx
         return binascii.hexlify(tx)
@@ -194,24 +218,19 @@ class Transaction:
             print('     sequence', binascii.hexlify(tx[i+42 + scriptsig_len:i + 42 + scriptsig_len + 4]), ',')
             i = i + 42 + scriptsig_len - 1
         i = i + 5
-        print(' output_count', tx[i], ',')
-        print(' value : ', binascii.hexlify(tx[i+4:i+12]), ',')  # aie aie aie
-        output_length = tx[i+13]
-        print(' output_length : ', output_length, ',')
-        print(' output : ', binascii.hexlify(tx[i+14:i+13+output_length+1]), ',')  # ouie
-        print(' locktime : ', binascii.hexlify(tx[i+13+output_length+1:i+output_length+18]), ',')
+        output_count = tx[i]
+        print(' output_count :', output_count, ',')
+        j = 0
+        while j < output_count:
+            print(' output ' + str(j) + ' :')
+            print('     value : ', binascii.hexlify(tx[i+1:i+9]), ',')  # aie aie aie
+            script_length = tx[i+9]
+            print('     script_length : ', script_length, ',')
+            print('     scriptpubkey : ', binascii.hexlify(tx[i+10:i+10+script_length]), ',')  # ouie
+            j += 1
+            i = i+9+script_length
+        print(' locktime : ', binascii.hexlify(tx[i+1:i+5]), ',')
         print('}')
-
-
-    def get_prev_pubkey(self):
-        """
-        Fetches the script_pubkey from the ouput spent by this tx.
-
-        :return: The script as bytes.
-        """
-        txid = hex(int.from_bytes(self.prev_hash, 'big'))[2:]
-        index = int.from_bytes(self.index, 'little')
-        return binascii.unhexlify(self.network.send('getrawtransaction', [txid, 1])['result']['vout'][index]['scriptPubKey']['hex'])
 
     def sign_ouputs(self, key, pubkey):
         """
@@ -322,15 +341,9 @@ if __name__ == '__main__':
     outputs = [output1, output2]
     pk = wif_decode('T93wwCrhnQzGwgHFfhZjJGEA9NKuoTtwBb136WTjfek342b7Daf3')
     pub = get_pubkey(pk + b'\x01')
-    value = 0
-    # Creating an OP_RETURN
-    text = 'INSACOIN THE NEW BITCOIN'.encode('ascii')
-    text_len = len(text)
-    script_pubkey = Script('OP_RETURN').parse()
-    script_pubkey += text_len.to_bytes(1, 'big') # PUSH
-    script_pubkey += text
-
-    tx = Transaction(insacoind, outputs, value, script_pubkey)
+    value = 100000
+    script_pubkey = Script('OP_DUP OP_HASH160').parse() + hash160(pub, bin=True) + Script('OP_EQUALVERIFY OP_CHECKSIG').parse()
+    tx = Transaction(insacoind, outputs, value, script_pubkey, 10000, 'iLz72KWCyfBMf9GawvWSTbZKCcLkhn6DZM')
     tx.create_and_sign(pk, pub)
     response = tx.send()
     if response == True:

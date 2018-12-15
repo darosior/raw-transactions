@@ -127,7 +127,7 @@ def decode_check(string):
     # Converting to bytes in order to verify the checksum
     payload = number.to_bytes(sizeof(number), 'big')
     if payload and double_sha256(payload[:-4], True)[:4] == payload[-4:]:
-        return payload[:-4]
+        return payload[1:-4]
     else:
         return None
 
@@ -147,9 +147,9 @@ def wif_decode(string):
     """
     dec = decode_check(string)
     if string[0] == 'T': # For Bitcoin the condition is if string[0] == 'K' or 'L'
-        return dec[1:-1] # bytes
+        return dec[:-1] # bytes
     else:
-        return dec[1:] # bytes
+        return dec # bytes
 
 
 def gen_privkey():
