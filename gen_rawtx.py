@@ -44,8 +44,10 @@ class Bitcoind:
                    'method':call,
                    'params':params}
         r = self.session.post(self.url, json=payload)
-        return r.json()
-
+        try:
+            return r.json()
+        except:
+            raise Exception('An error occured while parsing daemon response as json. Is the node up and synced ? ', r.text)
 
 class Script:
     """
@@ -156,7 +158,7 @@ class Transaction:
         if addr_change:
             self.addr_change = decode_check(addr_change)
         else:
-            self.addr_change = addr_change
+            self.addr_change = addr_change # None
 
     def serialize(self):
         """
@@ -188,6 +190,7 @@ class Transaction:
             # The change output
             tx += self.change.to_bytes(8, 'little')
             script_pubkey = Script('OP_DUP OP_HASH160').parse()
+            script_pubkey += len(self.addr_change).to_bytes(1, 'big')
             script_pubkey += self.addr_change
             script_pubkey += Script('OP_EQUALVERIFY OP_CHECKSIG').parse()
             script_length = len(script_pubkey)
@@ -223,7 +226,7 @@ class Transaction:
         j = 0
         while j < output_count:
             print(' output ' + str(j) + ' :')
-            print('     value : ', binascii.hexlify(tx[i+1:i+9]), ',')  # aie aie aie
+            print('     value : ', binascii.hexlify(tx[i+1:i+9]), int.from_bytes(tx[i+1:i+9], 'little'), ',')  # aie aie aie
             script_length = tx[i+9]
             print('     script_length : ', script_length, ',')
             print('     scriptpubkey : ', binascii.hexlify(tx[i+10:i+10+script_length]), ',')  # ouie
@@ -336,14 +339,15 @@ class Transaction:
 if __name__ == '__main__':
     insacoind = Bitcoind('http://127.0.0.1:7332', 'darosior', 'password')
 
-    output1 = Output(0x4841c10c2527f5c5ed5092dceaaca44e4b10f6214e07e0e20105b9a5c3fe70ee, 0)
+    output1 = Output(0xf2d452508d8f3684467741dbd39c3becb0ae013a067073b212d0c11f35e2c8ea, 0)
     output2 = Output(0x6aacd50035834f4144ff5509137657bcf1cf830062eca06e5f6ade73a85ab1d8, 0)
-    outputs = [output1, output2]
-    pk = wif_decode('T93wwCrhnQzGwgHFfhZjJGEA9NKuoTtwBb136WTjfek342b7Daf3')
+    outputs = [output1]
+    pk = wif_decode('T8xZ18X7scPoLLmitnD78R4L9Q9Gq1FSmWnP8Fb98Zg7Qii4Qh45')
     pub = get_pubkey(pk + b'\x01')
-    value = 100000
-    script_pubkey = Script('OP_DUP OP_HASH160').parse() + hash160(pub, bin=True) + Script('OP_EQUALVERIFY OP_CHECKSIG').parse()
-    tx = Transaction(insacoind, outputs, value, script_pubkey, 10000, 'iLz72KWCyfBMf9GawvWSTbZKCcLkhn6DZM')
+    pub_hash = hash160(pub, bin=True)
+    value = 90000000 #0.9
+    script_pubkey = Script('OP_DUP OP_HASH160').parse() + len(pub_hash).to_bytes(1, 'big') + pub_hash + Script('OP_EQUALVERIFY OP_CHECKSIG').parse()
+    tx = Transaction(insacoind, outputs, value, script_pubkey, 10000000, 'iNFYoidN53bBM2YE2qT57SVVr8f6gF6t1g')
     tx.create_and_sign(pk, pub)
     response = tx.send()
     if response == True:
