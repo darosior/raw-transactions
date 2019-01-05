@@ -123,6 +123,18 @@ class Output:
         index = int.from_bytes(self.index, 'little')
         return binascii.unhexlify(bitcoind.send('getrawtransaction', [txid, 1])['result']['vout'][index]['scriptPubKey']['hex'])
 
+    def get_value(self, bitcoind):
+        """
+        Fetches the amount of coins this output locks.
+
+        :param bitcoind: The instance to ask the script from.
+        :return: The amount as satoshis.
+        """
+        txid = hex(int.from_bytes(self.txid, 'big'))[2:]
+        index = int.from_bytes(self.index, 'little')
+        amount = bitcoind.send('getrawtransaction', [txid, 1])['result']['vout'][index]['value']
+        return int(amount * 100000000) # In sat
+
 
 class Transaction:
     """
@@ -154,11 +166,12 @@ class Transaction:
             self.value = value
         else:
             raise Exception('value must be specified as int or bytes, not {}'.format(type(value)))
-        self.change = int.from_bytes(self.value, 'little') - fees
-        if addr_change:
-            self.addr_change = decode_check(addr_change)
-        else:
-            self.addr_change = addr_change # None
+        # Calculating the change and the address to send it to
+        input_sum = 0
+        for input in vin:
+            input_sum += input.get_value(self.network)
+        self.change = input_sum - (int.from_bytes(self.value, 'little') + fees)
+        self.addr_change = decode_check(addr_change) if addr_change else None
 
     def serialize(self):
         """
@@ -235,19 +248,20 @@ class Transaction:
         print(' locktime : ', binascii.hexlify(tx[i+1:i+5]), ',')
         print('}')
 
-    def sign_ouputs(self, key, pubkey):
+    def sign_outputs(self, key, pubkey):
         """
         Signs the transaction.
 
         :param key: The private key with which to sign the transaction.
+        :param pubkey: The public key which will be added to the scriptsig.
         :return: The DER-encoded signature.
         """
         signed_vin = []
         # Signing each input
         for input in self.vin:
             # We set every other script_sig to null
-            for inp in self.vin:
-                inp.script_sig = b''
+            for input in self.vin:
+                input.script_sig = b''
             # And the one we are actually signing to its script_pubkey
             input.script_sig = input.script_pubkey
             # To sign the transaction, we serialize it with the script_sig being the script_pubkey of the outputs spent.
@@ -276,7 +290,7 @@ class Transaction:
         :param pubkey: The corresponding public key.
         :return: A serialized and signed Bitcoin transaction.
         """
-        self.sign_ouputs(privkey, pubkey)
+        self.sign_outputs(privkey, pubkey)
         return self.serialize()
 
     def send(self):
@@ -332,22 +346,41 @@ class Transaction:
         s.recv(1000) # receive version + verack
         s.send(verack_message)
         s.send(tx_message)
-        #print('Error message : ')
-        #print(s.recv(1000))
+        print('Error message : ')
+        print(s.recv(1000))
 
 
 if __name__ == '__main__':
+    # Initiating a connection to the local Insacoin running daemon
     insacoind = Bitcoind('http://127.0.0.1:7332', 'darosior', 'password')
 
-    output1 = Output(0xf2d452508d8f3684467741dbd39c3becb0ae013a067073b212d0c11f35e2c8ea, 0)
-    output2 = Output(0x6aacd50035834f4144ff5509137657bcf1cf830062eca06e5f6ade73a85ab1d8, 0)
+    # A list of all the inputs my transaction is spending. Before being spent by a transaction, they are still unspent
+    # outputs and are identified by the transaction which created them (txid) and their position (index in the list of
+    # outputs this transaction created). In the "Transaction" class they are called inputs because they are inputs this
+    # transaction is spending.
+    output1 = Output(0x8913619c99a960bd1c5c75c0cf2ce3935d90387eaac86210a30417821edc5754, 0)
+    #output2 = Output(0x6aacd50035834f4144ff5509137657bcf1cf830062eca06e5f6ade73a85ab1d8, 0)
     outputs = [output1]
-    pk = wif_decode('T8xZ18X7scPoLLmitnD78R4L9Q9Gq1FSmWnP8Fb98Zg7Qii4Qh45')
+
+    # The private key which will be used to sign inputs of the transaction.
+    pk = wif_decode('T7KWF59taogFXEVxxDEmRy4RhcP2a98tzdfCtnxfoGr2HTJM8Mw7')
+    # The public key is needed to form the scriptsig
     pub = get_pubkey(pk + b'\x01')
-    pub_hash = hash160(pub, bin=True)
-    value = 90000000 #0.9
+
+    # The receiver of the output, as a non-encoded address : just the hash160 of the public key.
+    pub_hash = decode_check('iNFYoidN53bBM2YE2qT57SVVr8f6gF6t1g')
+    # How many satoshis to send to the receiver. 1BTC=100000000sat
+    value = 40000000
+
+    # The script which will lock the coins (the script has to be standard do not put something non-standard or the tx
+    # won't be accepted.
     script_pubkey = Script('OP_DUP OP_HASH160').parse() + len(pub_hash).to_bytes(1, 'big') + pub_hash + Script('OP_EQUALVERIFY OP_CHECKSIG').parse()
-    tx = Transaction(insacoind, outputs, value, script_pubkey, 10000000, 'iNFYoidN53bBM2YE2qT57SVVr8f6gF6t1g')
+
+    # The creation of the actual transaction, an instance of the Transaction class.
+    # The change is calculated automatically, if the amount sent + the fees is less than the sum of the value of every
+    # inputs, then another output will be created to the change address.
+    #               the daemon-the list-amount-the lock script-fees in sat-address for change
+    tx = Transaction(insacoind, outputs, value, script_pubkey, 10000000, 'iFGCfMKKBmjYowmFj3vroVdcK3srzTR2Pq')
     tx.create_and_sign(pk, pub)
     response = tx.send()
     if response == True:
