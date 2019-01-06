@@ -161,7 +161,8 @@ class Transaction:
         self.vin = vin
         for input in self.vin:
             input.script_pubkey = input.fetch_script(self.network)
-            input.script_sig = None
+            if not hasattr(input, 'script_sig'):
+                input.script_sig = None
         len_vin = len(vin)
         self.input_cout = len_vin.to_bytes(1, 'little')
         if isinstance(value, int):
@@ -175,6 +176,8 @@ class Transaction:
         for input in vin:
             input_sum += input.get_value(self.network)
         self.change = input_sum - (int.from_bytes(self.value, 'little') + fees)
+        if self.change < 0:
+            raise Exception('The value sent + the fees are superior to the input sum')
         self.addr_change = decode_check(addr_change) if addr_change else None
 
     def serialize(self):
@@ -243,10 +246,10 @@ class Transaction:
         j = 0
         while j < output_count:
             print(' output ' + str(j) + ' :')
-            print('     value : ', binascii.hexlify(tx[i+1:i+9]), int.from_bytes(tx[i+1:i+9], 'little'), ',')  # aie aie aie
+            print('     value : ', binascii.hexlify(tx[i+1:i+9]), int.from_bytes(tx[i+1:i+9], 'little'), ',')
             script_length = tx[i+9]
             print('     script_length : ', script_length, ',')
-            print('     scriptpubkey : ', binascii.hexlify(tx[i+10:i+10+script_length]), ',')  # ouie
+            print('     scriptpubkey : ', binascii.hexlify(tx[i+10:i+10+script_length]), ',')
             j += 1
             i = i+9+script_length
         print(' locktime : ', binascii.hexlify(tx[i+1:i+5]), ',')
@@ -374,7 +377,7 @@ if __name__ == '__main__':
     # The receiver of the output, as a non-encoded address : just the hash160 of the public key.
     #pub_hash = decode_check('iNFYoidN53bBM2YE2qT57SVVr8f6gF6t1g')
     # How many satoshis to send to the receiver. 1BTC=100000000sat
-    value = 10000000
+    value = 1
 
     # The script which will lock the coins (the script has to be standard do not put something non-standard or the tx
     # won't be accepted.
@@ -383,9 +386,14 @@ if __name__ == '__main__':
     # The creation of the actual transaction, an instance of the Transaction class.
     # The change is calculated automatically, if the amount sent + the fees is less than the sum of the value of every
     # inputs, then another output will be created to the change address.
-    #               the daemon-the list-amount-the lock script-fees in sat-address for change
-    tx = Transaction(insacoind, outputs, value, script_pubkey, 10000000, 'iNFYoidN53bBM2YE2qT57SVVr8f6gF6t1g')
-    tx.create_and_sign(pk, pub)
+    for o in outputs:
+        o.script_pubkey = o.fetch_script(insacoind)
+        o.script_sig = Script('OP_2').parse() + 0x02.to_bytes(1, 'big') + Script('OP_2 OP_EQUAL').parse()
+
+    tx = Transaction(insacoind, outputs, value, script_pubkey, 1000000, 'iNFYoidN53bBM2YE2qT57SVVr8f6gF6t1g')
+    #tx.create_and_sign(pk, pub)
+    print(tx.serialize())
+
     response = tx.send()
     if response == True:
         print(tx.id)
