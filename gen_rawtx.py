@@ -119,9 +119,13 @@ class Output:
         :param bitcoind: The instance to ask the script from.
         :return: The script as bytes.
         """
-        txid = hex(int.from_bytes(self.txid, 'big'))[2:]
+        txid = str(binascii.hexlify(self.txid), 'ascii')
         index = int.from_bytes(self.index, 'little')
-        return binascii.unhexlify(bitcoind.send('getrawtransaction', [txid, 1])['result']['vout'][index]['scriptPubKey']['hex'])
+        response = bitcoind.send('getrawtransaction', [txid, 1])
+        try:
+            return binascii.unhexlify(response['result']['vout'][index]['scriptPubKey']['hex'])
+        except:
+            raise Exception('Error when parsing response from daemon. ', response)
 
     def get_value(self, bitcoind):
         """
@@ -130,7 +134,7 @@ class Output:
         :param bitcoind: The instance to ask the script from.
         :return: The amount as satoshis.
         """
-        txid = hex(int.from_bytes(self.txid, 'big'))[2:]
+        txid = str(binascii.hexlify(self.txid), 'ascii')
         index = int.from_bytes(self.index, 'little')
         amount = bitcoind.send('getrawtransaction', [txid, 1])['result']['vout'][index]['value']
         return int(amount * 100000000) # In sat
@@ -358,29 +362,29 @@ if __name__ == '__main__':
     # outputs and are identified by the transaction which created them (txid) and their position (index in the list of
     # outputs this transaction created). In the "Transaction" class they are called inputs because they are inputs this
     # transaction is spending.
-    output1 = Output(0x8913619c99a960bd1c5c75c0cf2ce3935d90387eaac86210a30417821edc5754, 0)
+    output1 = Output(binascii.unhexlify('33d4a38bc457537690c0288c83efbbc4d95f01f0f31118db48b632e0440dbbe6'), 0)
     #output2 = Output(0x6aacd50035834f4144ff5509137657bcf1cf830062eca06e5f6ade73a85ab1d8, 0)
     outputs = [output1]
 
     # The private key which will be used to sign inputs of the transaction.
-    pk = wif_decode('T7KWF59taogFXEVxxDEmRy4RhcP2a98tzdfCtnxfoGr2HTJM8Mw7')
+    #pk = wif_decode('T8xZ18X7scPoLLmitnD78R4L9Q9Gq1FSmWnP8Fb98Zg7Qii4Qh45')
     # The public key is needed to form the scriptsig
-    pub = get_pubkey(pk + b'\x01')
+    #pub = get_pubkey(pk + b'\x01')
 
     # The receiver of the output, as a non-encoded address : just the hash160 of the public key.
-    pub_hash = decode_check('iNFYoidN53bBM2YE2qT57SVVr8f6gF6t1g')
+    #pub_hash = decode_check('iNFYoidN53bBM2YE2qT57SVVr8f6gF6t1g')
     # How many satoshis to send to the receiver. 1BTC=100000000sat
-    value = 40000000
+    value = 10000000
 
     # The script which will lock the coins (the script has to be standard do not put something non-standard or the tx
     # won't be accepted.
-    script_pubkey = Script('OP_DUP OP_HASH160').parse() + len(pub_hash).to_bytes(1, 'big') + pub_hash + Script('OP_EQUALVERIFY OP_CHECKSIG').parse()
+    script_pubkey = Script('OP_HASH160').parse() + b'\x14' + hash160(Script('OP_2 OP_EQUAL').parse(), bin=True) + Script('OP_EQUAL').parse()
 
     # The creation of the actual transaction, an instance of the Transaction class.
     # The change is calculated automatically, if the amount sent + the fees is less than the sum of the value of every
     # inputs, then another output will be created to the change address.
     #               the daemon-the list-amount-the lock script-fees in sat-address for change
-    tx = Transaction(insacoind, outputs, value, script_pubkey, 10000000, 'iFGCfMKKBmjYowmFj3vroVdcK3srzTR2Pq')
+    tx = Transaction(insacoind, outputs, value, script_pubkey, 10000000, 'iNFYoidN53bBM2YE2qT57SVVr8f6gF6t1g')
     tx.create_and_sign(pk, pub)
     response = tx.send()
     if response == True:
