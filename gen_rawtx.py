@@ -361,7 +361,7 @@ if __name__ == '__main__':
     # Initiating a connection to the local Insacoin running daemon
     insacoind = Bitcoind('http://127.0.0.1:7332', 'darosior', 'password')
 
-    # A list of all the inputs my transaction is spending. Before being spent by a transaction, they are still unspent
+    # A list of all the inputs my transaction is spending. Before being spent by a transaction, 'inputs' are still unspent
     # outputs and are identified by the transaction which created them (txid) and their position (index in the list of
     # outputs this transaction created). In the "Transaction" class they are called inputs because they are inputs this
     # transaction is spending.
@@ -370,12 +370,12 @@ if __name__ == '__main__':
     outputs = [output1]
 
     # The private key which will be used to sign inputs of the transaction.
-    #pk = wif_decode('T8xZ18X7scPoLLmitnD78R4L9Q9Gq1FSmWnP8Fb98Zg7Qii4Qh45')
+    pk = wif_decode('T8xZ18X7scPoLLmitnD78R4L9Q9Gq1FSmWnP8Fb98Zg7Qii4Qh45')
     # The public key is needed to form the scriptsig
-    #pub = get_pubkey(pk + b'\x01')
+    pub = get_pubkey(pk + b'\x01')
 
     # The receiver of the output, as a non-encoded address : just the hash160 of the public key.
-    #pub_hash = decode_check('iNFYoidN53bBM2YE2qT57SVVr8f6gF6t1g')
+    pub_hash = decode_check('iNFYoidN53bBM2YE2qT57SVVr8f6gF6t1g')
     # How many satoshis to send to the receiver. 1BTC=100000000sat
     value = 1
 
@@ -386,18 +386,16 @@ if __name__ == '__main__':
     # The creation of the actual transaction, an instance of the Transaction class.
     # The change is calculated automatically, if the amount sent + the fees is less than the sum of the value of every
     # inputs, then another output will be created to the change address.
-    for o in outputs:
-        o.script_pubkey = o.fetch_script(insacoind)
-        o.script_sig = Script('OP_2').parse() + 0x02.to_bytes(1, 'big') + Script('OP_2 OP_EQUAL').parse()
-
     tx = Transaction(insacoind, outputs, value, script_pubkey, 1000000, 'iNFYoidN53bBM2YE2qT57SVVr8f6gF6t1g')
-    #tx.create_and_sign(pk, pub)
-    print(tx.serialize())
+    tx.create_and_sign(pk, pub)
 
     response = tx.send()
     if response == True:
         print(tx.id)
     else:
+        print('==== error message ====\n')
         print(response)
+        print('\n==== tx serialized ====\n')
         print(binascii.hexlify(tx.serialized))
+        print('\n==== tx decoded ====\n')
         tx.print()
